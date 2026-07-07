@@ -1,4 +1,3 @@
-@"
 .venv/
 venv/
 __pycache__/
@@ -6,4 +5,3 @@ __pycache__/
 .env
 test.py
 q-dynamic-extract-server_sample.json
-"@ | Out-File -Encoding utf8 .gitignore
