@@ -218,6 +218,56 @@ def fallback_extract(text: str, schema: Dict[str, str]) -> Dict[str, Any]:
 
     return result
 
+def smart_guess_value(key: str, typ: str, text: str):
+    k = key.lower().replace("_", " ")
+    t = text.strip()
+
+    # device / equipment / asset style fields
+    if any(w in k for w in ["device", "equipment", "asset", "machine", "unit"]):
+        patterns = [
+            r"\bAC\s+Unit\s+\d+\b",
+            r"\bHVAC\s+Unit\s+\d+\b",
+            r"\bUnit\s+\d+\b",
+            r"\bPump\s+\d+\b",
+            r"\bMotor\s+\d+\b",
+            r"\bGenerator\s+\d+\b",
+            r"\bBoiler\s+\d+\b",
+            r"\bCompressor\s+\d+\b",
+            r"\bValve\s+\d+\b",
+            r"\bSensor\s+\d+\b",
+            r"\bServer\s+\d+\b",
+            r"\bRouter\s+\d+\b",
+            r"\bPrinter\s+\d+\b",
+        ]
+
+        for p in patterns:
+            m = re.search(p, t, flags=re.I)
+            if m:
+                return coerce_value(m.group(0), typ)
+
+    # customer/person/name
+    if any(w in k for w in ["customer", "person", "name", "user", "client"]):
+        m = re.search(r"\b([A-Z][a-z]+)\b", t)
+        if m:
+            return coerce_value(m.group(1), typ)
+
+    # amount / price / cost
+    if any(w in k for w in ["amount", "price", "cost", "total"]):
+        m = re.search(r"(?:Rs\.?|INR|₹|\$)?\s*[\d,]+(?:\.\d+)?", t, flags=re.I)
+        if m:
+            return coerce_value(m.group(0), typ)
+
+    # date
+    if "date" in k:
+        m = re.search(
+            r"\b\d{1,2}\s+[A-Za-z]+\s+\d{4}\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}/\d{1,2}/\d{4}\b",
+            t
+        )
+        if m:
+            return coerce_value(m.group(0), typ)
+
+    return None
+
 
 def llm_extract(text: str, schema: Dict[str, str]) -> Dict[str, Any]:
     if not GEMINI_API_KEY:
@@ -268,17 +318,29 @@ def root():
 
 @app.post("/dynamic-extract")
 def dynamic_extract(req: DynamicExtractRequest):
+    schema = req.schema or {}
+    text = req.text or ""
+
     try:
-        schema = req.schema or {}
-        text = req.text or ""
-
         extracted = llm_extract(text, schema)
-
-        final = {}
-        for key, typ in schema.items():
-            final[key] = coerce_value(extracted.get(key), typ)
-
-        return final
-
     except Exception:
-        return {key: None for key in (req.schema or {}).keys()}
+        extracted = {}
+
+    fallback = fallback_extract(text, schema)
+
+    final = {}
+
+    for key, typ in schema.items():
+        value = extracted.get(key)
+
+        # If LLM gives null/bad value, use label fallback
+        if value is None:
+            value = fallback.get(key)
+
+        # If still null, use smart sentence fallback
+        if value is None:
+            value = smart_guess_value(key, typ, text)
+
+        final[key] = coerce_value(value, typ)
+
+    return final
